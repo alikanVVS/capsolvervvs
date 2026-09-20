@@ -6,8 +6,8 @@ use std::time::Duration;
 use tokio::time::sleep;
 
 pub struct TurnstileSolver {
-    timeout_duration: Duration,
-    poll_interval: Duration,
+    pub timeout_duration: Duration,
+    pub poll_interval: Duration,
 }
 
 impl TurnstileSolver {
