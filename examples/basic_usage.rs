@@ -6,18 +6,21 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
     let config = Config {
-        chrome_path: "/usr/bin/google-chrome".to_string(),
+        chrome_path: std::env::var("CHROME_PATH")
+            .unwrap_or_else(|_| "/usr/bin/google-chrome".to_string()),
         browser_pool_size: 2,
         tabs_per_process: 3,
         server_host: "0.0.0.0".to_string(),
-        server_port: 8080,
+        server_port: 407,
         log_level: "debug".to_string(),
         headless: true,
         disable_sandbox: false,
         user_agent: Some("Mozilla/5.0".to_string()),
-        solve_timeout: 120,
-        load_timeout: 30,
-        cdp_timeout: 10,
+        solve_timeout_ms: 29_000,
+        load_timeout_ms: 30_000,
+        cdp_timeout_ms: 10_000,
+        startup_timeout_ms: 20_000,
+        request_timeout_ms: 60_000,
         cdp_port_base: 9222,
     };
 

@@ -44,9 +44,11 @@ pub struct Config {
     pub tabs_per_process: usize,       // Default: 5
     pub headless: bool,                // Default: true
     pub disable_sandbox: bool,         // Default: false
-    pub solve_timeout: u64,            // Default: 120s
-    pub load_timeout: u64,             // Default: 30s
-    pub cdp_timeout: u64,              // Default: 10s
+    pub solve_timeout_ms: u64,         // Default: 29000 (milliseconds)
+    pub load_timeout_ms: u64,          // Default: 30000 (milliseconds)
+    pub cdp_timeout_ms: u64,           // Default: 10000 (milliseconds)
+    pub startup_timeout_ms: u64,       // Default: 20000 (milliseconds)
+    pub request_timeout_ms: u64,       // Default: 60000 (milliseconds)
     pub cdp_port_base: u16,            // Default: 9222
 }
 ```
@@ -410,17 +412,12 @@ pub async fn health_handler(
 }
 ```
 
-#### `POST /shutdown`
-Gracefully shuts down service.
-
-```rust
-pub async fn shutdown_handler(
-    State(state): State<Arc<AppState>>
-) -> StatusCode
-```
+Shutdown is driven by SIGTERM/Ctrl+C rather than an HTTP endpoint, so an
+unauthenticated request cannot take the service down. See `shutdown_signal`
+in `src/main.rs`.
 
 **AppState:**
-Contains shared `Arc<BrowserPool>` for handler access.
+Contains the shared `Arc<BrowserPool>` and `Arc<Config>` for handler access.
 
 ### 6. Main Server Module (`src/main.rs`)
 

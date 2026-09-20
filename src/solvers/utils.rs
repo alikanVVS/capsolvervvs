@@ -2,16 +2,14 @@ use super::error::{Result, SolverError};
 
 pub struct StubPageBuilder {
     sitekey: String,
-    url: String,
     cdata: Option<String>,
     action: Option<String>,
 }
 
 impl StubPageBuilder {
-    pub fn new(sitekey: String, url: String) -> Self {
+    pub fn new(sitekey: String) -> Self {
         StubPageBuilder {
             sitekey,
-            url,
             cdata: None,
             action: None,
         }
@@ -31,7 +29,7 @@ impl StubPageBuilder {
         let cdata_attr = self
             .cdata
             .as_ref()
-            .map(|c| format!(" data-cData=\"{}\"", escape_html(c)))
+            .map(|c| format!(" data-cdata=\"{}\"", escape_html(c)))
             .unwrap_or_default();
 
         let action_attr = self
@@ -40,70 +38,22 @@ impl StubPageBuilder {
             .map(|a| format!(" data-action=\"{}\"", escape_html(a)))
             .unwrap_or_default();
 
-        let sitekey = &self.sitekey;
+        let sitekey = escape_html(&self.sitekey);
 
         format!(
             r#"<!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Turnstile Solver</title>
+    <title>Turnstile</title>
     <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
-    <style>
-        body {{
-            margin: 0;
-            padding: 20px;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-            background-color: #f5f5f5;
-        }}
-        .container {{
-            max-width: 600px;
-            margin: 0 auto;
-            background: white;
-            padding: 40px;
-            border-radius: 8px;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-        }}
-        h1 {{
-            text-align: center;
-            color: #333;
-            margin-top: 0;
-        }}
-        .turnstile-container {{
-            display: flex;
-            justify-content: center;
-            margin: 40px 0;
-        }}
-        .status {{
-            text-align: center;
-            padding: 10px;
-            margin-top: 20px;
-            border-radius: 4px;
-            font-size: 14px;
-        }}
-        .status.waiting {{
-            background-color: #e3f2fd;
-            color: #1976d2;
-        }}
-        .status.success {{
-            background-color: #e8f5e9;
-            color: #388e3c;
-        }}
-        .status.error {{
-            background-color: #ffebee;
-            color: #d32f2f;
-        }}
-    </style>
 </head>
 <body>
-    <div class="container">
-        <h1>Cloudflare Turnstile</h1>
-        <div class="turnstile-container">
-            <div class="cf-turnstile"{cdata_attr}{action_attr} data-sitekey="{sitekey}" data-callback="onTurnstileSuccess"></div>
-        </div>
-        <div id="status" class="status waiting">Waiting for token...</div>
-    </div>
+    <div class="cf-turnstile"
+         data-sitekey="{sitekey}"{cdata_attr}{action_attr}
+         data-callback="onTurnstileSuccess"
+         data-error-callback="onTurnstileError"
+         data-expired-callback="onTurnstileExpire"></div>
 
     <script>
         window.turnstileToken = null;
@@ -111,25 +61,15 @@ impl StubPageBuilder {
 
         function onTurnstileSuccess(token) {{
             window.turnstileToken = token;
-            document.getElementById('status').textContent = 'Token obtained: ' + token.substring(0, 20) + '...';
-            document.getElementById('status').className = 'status success';
         }}
 
         function onTurnstileError(errorCode) {{
-            window.turnstileError = errorCode;
-            document.getElementById('status').textContent = 'Turnstile error: ' + errorCode;
-            document.getElementById('status').className = 'status error';
+            window.turnstileError = String(errorCode);
         }}
 
         function onTurnstileExpire() {{
             window.turnstileToken = null;
-            document.getElementById('status').textContent = 'Token expired';
-            document.getElementById('status').className = 'status error';
         }}
-
-        window.checkTurnstileReady = function() {{
-            return window.turnstile !== undefined && window.turnstile.isReady !== undefined;
-        }};
 
         window.getTurnstileToken = function() {{
             return window.turnstileToken;
@@ -137,14 +77,6 @@ impl StubPageBuilder {
 
         window.getTurnstileError = function() {{
             return window.turnstileError;
-        }};
-
-        window.resetTurnstile = function() {{
-            if (window.turnstile && window.turnstile.reset) {{
-                window.turnstile.reset();
-                window.turnstileToken = null;
-                window.turnstileError = null;
-            }}
         }};
     </script>
 </body>
@@ -173,7 +105,10 @@ pub fn validate_sitekey(sitekey: &str) -> Result<()> {
         ));
     }
 
-    if !sitekey.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+    if !sitekey
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
         return Err(SolverError::InvalidSitekey(
             "Sitekey contains invalid characters".to_string(),
         ));
@@ -196,17 +131,31 @@ pub fn validate_url(url: &str) -> Result<()> {
     Ok(())
 }
 
+/// Scheme + host + port, used to scope cookie lookups and request interception.
+pub fn origin_of(url: &str) -> Result<String> {
+    let (scheme, rest) = url
+        .split_once("://")
+        .ok_or_else(|| SolverError::ConfigError(format!("URL has no scheme: {}", url)))?;
+
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+
+    if authority.is_empty() {
+        return Err(SolverError::ConfigError(format!(
+            "URL has no host: {}",
+            url
+        )));
+    }
+
+    Ok(format!("{}://{}", scheme, authority))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_stub_page_builder() {
-        let page = StubPageBuilder::new(
-            "1x00000000000000000000AA".to_string(),
-            "https://example.com".to_string(),
-        )
-        .build();
+        let page = StubPageBuilder::new("1x00000000000000000000AA".to_string()).build();
 
         assert!(page.contains("cf-turnstile"));
         assert!(page.contains("1x00000000000000000000AA"));
@@ -215,26 +164,28 @@ mod tests {
 
     #[test]
     fn test_stub_page_with_cdata() {
-        let page = StubPageBuilder::new(
-            "1x00000000000000000000AA".to_string(),
-            "https://example.com".to_string(),
-        )
-        .with_cdata("test_cdata".to_string())
-        .build();
+        let page = StubPageBuilder::new("1x00000000000000000000AA".to_string())
+            .with_cdata("test_cdata".to_string())
+            .build();
 
-        assert!(page.contains("data-cData=\"test_cdata\""));
+        assert!(page.contains("data-cdata=\"test_cdata\""));
     }
 
     #[test]
     fn test_stub_page_with_action() {
-        let page = StubPageBuilder::new(
-            "1x00000000000000000000AA".to_string(),
-            "https://example.com".to_string(),
-        )
-        .with_action("test_action".to_string())
-        .build();
+        let page = StubPageBuilder::new("1x00000000000000000000AA".to_string())
+            .with_action("test_action".to_string())
+            .build();
 
         assert!(page.contains("data-action=\"test_action\""));
+    }
+
+    #[test]
+    fn test_stub_page_registers_error_callbacks() {
+        let page = StubPageBuilder::new("1x00000000000000000000AA".to_string()).build();
+
+        assert!(page.contains("data-error-callback=\"onTurnstileError\""));
+        assert!(page.contains("data-expired-callback=\"onTurnstileExpire\""));
     }
 
     #[test]
@@ -262,5 +213,18 @@ mod tests {
     fn test_validate_url_invalid() {
         assert!(validate_url("").is_err());
         assert!(validate_url("example.com").is_err());
+    }
+
+    #[test]
+    fn test_origin_of() {
+        assert_eq!(
+            origin_of("https://example.com/a/b?c=d").unwrap(),
+            "https://example.com"
+        );
+        assert_eq!(
+            origin_of("http://example.com:8080/x").unwrap(),
+            "http://example.com:8080"
+        );
+        assert!(origin_of("example.com").is_err());
     }
 }

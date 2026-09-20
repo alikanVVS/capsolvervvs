@@ -29,7 +29,7 @@ Main solver for Turnstile challenges.
 
 ```rust
 pub struct TurnstileSolver {
-    timeout_duration: Duration,    // Default: 120 seconds
+    timeout_duration: Duration,    // Default: 29 seconds
     poll_interval: Duration,       // Default: 500 milliseconds
 }
 ```
@@ -78,7 +78,7 @@ let token = solver.solve_with_context(&mut context, params).await?;
 
 #### `new()`
 Creates a new solver with default settings.
-- Timeout: 120 seconds
+- Timeout: 29 seconds
 - Poll interval: 500ms
 
 ```rust
@@ -164,7 +164,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Solve Turnstile
     let solver = TurnstileSolver::new()
-        .with_timeout(Duration::from_secs(120))
+        .with_timeout(Duration::from_secs(29))
         .with_poll_interval(Duration::from_millis(500));
 
     let token = solver.solve(
@@ -398,17 +398,18 @@ For advanced scenarios, create custom stub pages:
 ```rust
 use capsolver::solvers::utils::StubPageBuilder;
 
-let custom_page = StubPageBuilder::new(
-    "1x00000000000000000000AA".to_string(),
-    "https://example.com".to_string(),
-)
-.with_cdata("custom_data".to_string())
-.with_action("managed".to_string())
-.build();
+let custom_page = StubPageBuilder::new("1x00000000000000000000AA".to_string())
+    .with_cdata("custom_data".to_string())
+    .with_action("managed".to_string())
+    .build();
 
-// Navigate to data URI
-let data_uri = format!("data:text/html,{}", urlencoding::encode(&custom_page));
-session.navigate(&data_uri).await?;
+// The page must be served AT the target origin. Turnstile validates the
+// embedding origin against the sitekey, and a `data:` URL has origin `null`,
+// which Turnstile rejects. The solver therefore intercepts the document
+// request and fulfills it with this HTML:
+session.enable_fetch(json!([{ "urlPattern": url, "requestStage": "Request" }])).await?;
+// ... on Fetch.requestPaused:
+session.fulfill_request(&request_id, &custom_page, "text/html; charset=utf-8").await?;
 ```
 
 ### Retry Logic
@@ -464,7 +465,7 @@ let results = join_all(handles).await;
 
 ```
 4 Chrome processes × 5 contexts = 20 concurrent challenges
-Timeout: 120 seconds
+Timeout: 29 seconds
 Poll interval: 500ms
 Memory limit: 4GB
 ```

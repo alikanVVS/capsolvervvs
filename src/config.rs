@@ -1,5 +1,7 @@
 use std::env;
+use std::time::Duration;
 
+/// All timeouts are milliseconds, matching the deployment env vars.
 #[derive(Clone, Debug)]
 pub struct Config {
     pub server_host: String,
@@ -14,69 +16,100 @@ pub struct Config {
     pub disable_sandbox: bool,
     pub user_agent: Option<String>,
 
-    #[allow(dead_code)]
-    pub solve_timeout: u64,
-    #[allow(dead_code)]
-    pub load_timeout: u64,
-    #[allow(dead_code)]
-    pub cdp_timeout: u64,
+    pub solve_timeout_ms: u64,
+    pub load_timeout_ms: u64,
+    pub cdp_timeout_ms: u64,
+    pub startup_timeout_ms: u64,
+    pub request_timeout_ms: u64,
 
     pub cdp_port_base: u16,
+}
+
+fn env_parse<T: std::str::FromStr>(key: &str, default: T) -> T {
+    env::var(key)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(default)
+}
+
+fn env_bool(key: &str, default: bool) -> bool {
+    env::var(key)
+        .ok()
+        .map(|value| matches!(value.trim().to_lowercase().as_str(), "1" | "true" | "yes"))
+        .unwrap_or(default)
 }
 
 impl Config {
     pub fn from_env() -> Self {
         Config {
             server_host: env::var("SERVER_HOST").unwrap_or_else(|_| "0.0.0.0".to_string()),
+            // PORT is the conventional name in most container platforms.
             server_port: env::var("SERVER_PORT")
+                .or_else(|_| env::var("PORT"))
                 .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(8080),
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(407),
             log_level: env::var("LOG_LEVEL").unwrap_or_else(|_| "info".to_string()),
 
-            chrome_path: env::var("CHROME_PATH").unwrap_or_else(|_| "/usr/bin/google-chrome".to_string()),
-            browser_pool_size: env::var("BROWSER_POOL_SIZE")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(4),
-            tabs_per_process: env::var("TABS_PER_PROCESS")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(5),
+            chrome_path: env::var("CHROME_PATH")
+                .or_else(|_| env::var("CHROME_BIN"))
+                .unwrap_or_else(|_| "/usr/bin/google-chrome".to_string()),
+            browser_pool_size: env_parse("BROWSER_POOL_SIZE", 2),
+            tabs_per_process: env_parse("TABS_PER_PROCESS", 10),
 
-            headless: env::var("HEADLESS")
-                .ok()
-                .map(|s| s.to_lowercase() == "true")
-                .unwrap_or(true),
-            disable_sandbox: env::var("DISABLE_SANDBOX")
-                .ok()
-                .map(|s| s.to_lowercase() == "true")
-                .unwrap_or(false),
+            headless: env_bool("HEADLESS", true),
+            // Chrome cannot sandbox inside most containers, so this defaults on.
+            disable_sandbox: env_bool("DISABLE_SANDBOX", true),
             user_agent: env::var("USER_AGENT").ok(),
 
-            solve_timeout: env::var("SOLVE_TIMEOUT")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(120),
-            load_timeout: env::var("LOAD_TIMEOUT")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(30),
-            cdp_timeout: env::var("CDP_TIMEOUT")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(10),
+            solve_timeout_ms: env_parse("SOLVE_TIMEOUT", 29_000),
+            load_timeout_ms: env_parse("LOAD_TIMEOUT", 30_000),
+            cdp_timeout_ms: env_parse("CDP_TIMEOUT", 10_000),
+            startup_timeout_ms: env_parse("STARTUP_TIMEOUT", 20_000),
+            request_timeout_ms: env_parse("REQUEST_TIMEOUT", 60_000),
 
-            cdp_port_base: env::var("CDP_PORT_BASE")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(9222),
+            cdp_port_base: env_parse("CDP_PORT_BASE", 9222),
         }
+    }
+
+    pub fn solve_timeout_duration(&self) -> Duration {
+        Duration::from_millis(self.solve_timeout_ms)
+    }
+
+    pub fn load_timeout_duration(&self) -> Duration {
+        Duration::from_millis(self.load_timeout_ms)
+    }
+
+    pub fn cdp_timeout_duration(&self) -> Duration {
+        Duration::from_millis(self.cdp_timeout_ms)
+    }
+
+    pub fn startup_timeout(&self) -> Duration {
+        Duration::from_millis(self.startup_timeout_ms)
+    }
+
+    pub fn request_timeout(&self) -> Duration {
+        Duration::from_millis(self.request_timeout_ms)
     }
 }
 
 impl Default for Config {
     fn default() -> Self {
         Config::from_env()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_timeouts_are_milliseconds() {
+        let config = Config {
+            solve_timeout_ms: 29_000,
+            ..Config::from_env()
+        };
+
+        assert_eq!(config.solve_timeout_duration(), Duration::from_secs(29));
     }
 }

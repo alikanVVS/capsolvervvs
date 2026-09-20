@@ -1,6 +1,7 @@
 use super::error::{Result, SolverError};
-use super::utils::{StubPageBuilder, validate_sitekey, validate_url};
+use super::utils::{validate_sitekey, validate_url, StubPageBuilder};
 use crate::browser::{BrowserContext, CdpSession};
+use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
@@ -13,7 +14,7 @@ pub struct TurnstileSolver {
 impl TurnstileSolver {
     pub fn new() -> Self {
         TurnstileSolver {
-            timeout_duration: Duration::from_secs(120),
+            timeout_duration: Duration::from_secs(29),
             poll_interval: Duration::from_millis(500),
         }
     }
@@ -39,114 +40,132 @@ impl TurnstileSolver {
         validate_url(url)?;
         validate_sitekey(sitekey)?;
 
-        let session = self.setup_page(context, url, sitekey, cdata, action).await?;
-
-        self.wait_for_token(&session).await
-    }
-
-    async fn setup_page(
-        &self,
-        context: &mut BrowserContext,
-        url: &str,
-        sitekey: &str,
-        cdata: Option<&str>,
-        action: Option<&str>,
-    ) -> Result<Arc<CdpSession>> {
-        if context.cdp_session.is_none() {
-            return Err(SolverError::CdpError(
-                "No CDP session in context".to_string(),
-            ));
-        }
-
         let session = context
             .cdp_session
             .as_ref()
-            .ok_or_else(|| SolverError::CdpError("CDP session lost".to_string()))?
+            .ok_or_else(|| SolverError::CdpError("No CDP session in context".to_string()))?
             .clone();
 
+        let mut stub = StubPageBuilder::new(sitekey.to_string());
+        if let Some(cdata) = cdata {
+            stub = stub.with_cdata(cdata.to_string());
+        }
+        if let Some(action) = action {
+            stub = stub.with_action(action.to_string());
+        }
+
+        let interceptor = self.serve_stub_at(&session, url, stub.build()).await?;
+        let outcome = self.navigate_and_wait(&session, url).await;
+
+        interceptor.abort();
+        let _ = session.disable_fetch().await;
+
+        outcome
+    }
+
+    /// Turnstile validates the embedding origin against the sitekey, so the stub has to be
+    /// served *as* the target URL. Intercepting the document request is what makes the
+    /// widget see the real origin instead of `null`.
+    async fn serve_stub_at(
+        &self,
+        session: &Arc<CdpSession>,
+        url: &str,
+        html: String,
+    ) -> Result<tokio::task::JoinHandle<()>> {
+        session
+            .enable_fetch(json!([{ "urlPattern": url, "requestStage": "Request" }]))
+            .await
+            .map_err(|e| SolverError::CdpError(format!("Fetch.enable failed: {}", e)))?;
+
+        let mut events = session.subscribe();
+        let session = Arc::clone(session);
+        let expected_session = session.session_id().map(str::to_string);
+
+        Ok(tokio::spawn(async move {
+            while let Ok(event) = events.recv().await {
+                if event.get("method").and_then(Value::as_str) != Some("Fetch.requestPaused") {
+                    continue;
+                }
+
+                // With flattened sessions every event names the session it belongs to.
+                let event_session = event.get("sessionId").and_then(Value::as_str);
+                if expected_session.as_deref() != event_session {
+                    continue;
+                }
+
+                let Some(params) = event.get("params") else {
+                    continue;
+                };
+                let Some(request_id) = params.get("requestId").and_then(Value::as_str) else {
+                    continue;
+                };
+
+                let is_document =
+                    params.get("resourceType").and_then(Value::as_str) == Some("Document");
+
+                let result = if is_document {
+                    session
+                        .fulfill_request(request_id, &html, "text/html; charset=utf-8")
+                        .await
+                } else {
+                    session.continue_request(request_id).await
+                };
+
+                if let Err(e) = result {
+                    tracing::warn!(error = %e, "failed to handle intercepted request");
+                }
+            }
+        }))
+    }
+
+    async fn navigate_and_wait(&self, session: &Arc<CdpSession>, url: &str) -> Result<String> {
         session
             .navigate(url)
             .await
             .map_err(|e| SolverError::NavigationFailed(e.to_string()))?;
 
         session
-            .wait_for_navigation(self.timeout_duration.as_secs())
+            .wait_for_navigation(self.timeout_duration)
             .await
             .map_err(|e| SolverError::NavigationFailed(e.to_string()))?;
 
-        let mut stub_builder = StubPageBuilder::new(sitekey.to_string(), url.to_string());
-
-        if let Some(cd) = cdata {
-            stub_builder = stub_builder.with_cdata(cd.to_string());
-        }
-
-        if let Some(act) = action {
-            stub_builder = stub_builder.with_action(act.to_string());
-        }
-
-        let stub_html = stub_builder.build();
-
-        let data_uri = format!("data:text/html,{}", urlencoding::encode(&stub_html));
-
-        session
-            .navigate(&data_uri)
-            .await
-            .map_err(|e| SolverError::NavigationFailed(e.to_string()))?;
-
-        session
-            .wait_for_navigation(15)
-            .await
-            .map_err(|e| SolverError::NavigationFailed(e.to_string()))?;
-
-        Ok(session)
+        self.wait_for_token(session).await
     }
 
     async fn wait_for_token(&self, session: &Arc<CdpSession>) -> Result<String> {
-        let mut elapsed = Duration::ZERO;
+        let deadline = tokio::time::Instant::now() + self.timeout_duration;
 
         loop {
-            if elapsed >= self.timeout_duration {
-                return Err(SolverError::Timeout);
-            }
+            let response = session
+                .evaluate_script(
+                    "({ token: window.getTurnstileToken ? window.getTurnstileToken() : null, \
+                       error: window.getTurnstileError ? window.getTurnstileError() : null })",
+                )
+                .await
+                .map_err(|e| SolverError::CdpError(format!("token poll failed: {}", e)))?;
 
-            let token_result = session
-                .evaluate_script("window.getTurnstileToken && window.getTurnstileToken()")
-                .await;
+            let value = response.get("result").and_then(|r| r.get("value"));
 
-            match token_result {
-                Ok(response) => {
-                    if let Some(value) = response.get("result").and_then(|r| r.get("value")) {
-                        if value.is_null() {
-                            let error_result = session
-                                .evaluate_script("window.getTurnstileError && window.getTurnstileError()")
-                                .await;
-
-                            if let Ok(err_resp) = error_result {
-                                if let Some(err_val) = err_resp.get("result").and_then(|r| r.get("value")) {
-                                    if !err_val.is_null() {
-                                        return Err(SolverError::ChallengeFailed(
-                                            format!("Turnstile error: {:?}", err_val),
-                                        ));
-                                    }
-                                }
-                            }
-                        } else if let Some(token_str) = value.as_str() {
-                            if !token_str.is_empty() {
-                                return Ok(token_str.to_string());
-                            }
-                        }
+            if let Some(value) = value {
+                if let Some(token) = value.get("token").and_then(Value::as_str) {
+                    if !token.is_empty() {
+                        return Ok(token.to_string());
                     }
                 }
-                Err(e) => {
-                    return Err(SolverError::CdpError(format!(
-                        "Failed to evaluate token script: {}",
-                        e
+
+                if let Some(error) = value.get("error").and_then(Value::as_str) {
+                    return Err(SolverError::ChallengeFailed(format!(
+                        "Turnstile error {}",
+                        error
                     )));
                 }
             }
 
+            if tokio::time::Instant::now() >= deadline {
+                return Err(SolverError::Timeout);
+            }
+
             sleep(self.poll_interval).await;
-            elapsed += self.poll_interval;
         }
     }
 
@@ -186,7 +205,7 @@ mod tests {
     #[test]
     fn test_solver_creation() {
         let solver = TurnstileSolver::new();
-        assert_eq!(solver.timeout_duration, Duration::from_secs(120));
+        assert_eq!(solver.timeout_duration, Duration::from_secs(29));
         assert_eq!(solver.poll_interval, Duration::from_millis(500));
     }
 

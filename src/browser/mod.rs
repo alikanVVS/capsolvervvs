@@ -1,5 +1,5 @@
 pub mod cdp;
 pub mod pool;
 
-pub use cdp::CdpSession;
-pub use pool::{BrowserPool, BrowserContext, Page, CapacityStats};
+pub use cdp::{CdpConnection, CdpSession};
+pub use pool::{BrowserContext, BrowserPool, CapacityStats, Page};

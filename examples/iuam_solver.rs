@@ -8,20 +8,23 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
     let config = Config {
-        chrome_path: "/usr/bin/google-chrome".to_string(),
+        chrome_path: std::env::var("CHROME_PATH")
+            .unwrap_or_else(|_| "/usr/bin/google-chrome".to_string()),
         browser_pool_size: 1,
         tabs_per_process: 2,
         server_host: "0.0.0.0".to_string(),
-        server_port: 8080,
+        server_port: 407,
         log_level: "debug".to_string(),
         headless: true,
         disable_sandbox: true,
         user_agent: Some(
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36".to_string(),
         ),
-        solve_timeout: 120,
-        load_timeout: 30,
-        cdp_timeout: 10,
+        solve_timeout_ms: 29_000,
+        load_timeout_ms: 30_000,
+        cdp_timeout_ms: 10_000,
+        startup_timeout_ms: 20_000,
+        request_timeout_ms: 60_000,
         cdp_port_base: 9222,
     };
 
@@ -34,18 +37,18 @@ async fn main() -> anyhow::Result<()> {
 
     println!("🌐 Creating page...");
     let _page = pool
-        .new_page(&mut context, "https://example.com", None)
+        .new_page(&mut context, "about:blank", None)
         .await?;
     println!("✅ Page created");
 
     println!("\n🔍 Setting up IUAM solver...");
     let solver = IuamSolver::new()
-        .with_timeout(Duration::from_secs(120))
+        .with_timeout(Duration::from_secs(29))
         .with_poll_interval(Duration::from_millis(1000));
 
     println!("⏱️  Solving IUAM challenge...");
     println!("   - URL: https://example.com");
-    println!("   - Timeout: 120 seconds");
+    println!("   - Timeout: 29 seconds");
     println!("   - Poll interval: 1000ms");
 
     let params = IuamParams {

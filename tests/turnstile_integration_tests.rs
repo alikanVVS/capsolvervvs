@@ -6,7 +6,7 @@ use std::time::Duration;
 #[tokio::test]
 async fn test_turnstile_solver_creation() {
     let solver = TurnstileSolver::new();
-    assert_eq!(solver.timeout_duration, Duration::from_secs(120));
+    assert_eq!(solver.timeout_duration, Duration::from_secs(29));
     assert_eq!(solver.poll_interval, Duration::from_millis(500));
 }
 
@@ -24,7 +24,7 @@ async fn test_turnstile_solver_poll_interval_config() {
     let solver = TurnstileSolver::new()
         .with_poll_interval(Duration::from_millis(1000));
 
-    assert_eq!(solver.timeout_duration, Duration::from_secs(120));
+    assert_eq!(solver.timeout_duration, Duration::from_secs(29));
     assert_eq!(solver.poll_interval, Duration::from_millis(1000));
 }
 
@@ -45,7 +45,8 @@ async fn test_turnstile_solver_chained_config() {
 #[tokio::test]
 async fn test_pool_and_solver_integration() {
     let config = Config {
-        chrome_path: "/usr/bin/google-chrome".to_string(),
+        chrome_path: std::env::var("CHROME_PATH")
+            .unwrap_or_else(|_| "/usr/bin/google-chrome".to_string()),
         browser_pool_size: 1,
         tabs_per_process: 1,
         server_host: "0.0.0.0".to_string(),
@@ -54,23 +55,25 @@ async fn test_pool_and_solver_integration() {
         headless: true,
         disable_sandbox: true,
         user_agent: None,
-        solve_timeout: 120,
-        load_timeout: 30,
-        cdp_timeout: 10,
-        cdp_port_base: 9222,
+        solve_timeout_ms: 29_000,
+        load_timeout_ms: 30_000,
+        cdp_timeout_ms: 10_000,
+        startup_timeout_ms: 20_000,
+        request_timeout_ms: 60_000,
+        cdp_port_base: 9800,
     };
 
-    let pool = BrowserPool::new(config).await;
-    assert!(pool.is_ok(), "Pool creation should succeed");
+    let pool = BrowserPool::new(config)
+        .await
+        .expect("Pool creation should succeed");
 
-    let pool = pool.unwrap();
-    let context = pool.acquire().await;
-    assert!(context.is_ok(), "Context acquisition should succeed");
+    let context = pool.acquire().await.expect("Context acquisition should succeed");
 
     let stats = pool.get_capacity_stats().await;
     assert_eq!(stats.available, 0, "Should have 0 available after acquire");
     assert_eq!(stats.active, 1, "Should have 1 active after acquire");
 
+    pool.release(context).await.ok();
     pool.shutdown().await.ok();
 }
 
@@ -107,7 +110,7 @@ async fn test_turnstile_params_minimal() {
 #[tokio::test]
 async fn test_solver_default_creation() {
     let solver = TurnstileSolver::default();
-    assert_eq!(solver.timeout_duration, Duration::from_secs(120));
+    assert_eq!(solver.timeout_duration, Duration::from_secs(29));
     assert_eq!(solver.poll_interval, Duration::from_millis(500));
 }
 

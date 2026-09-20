@@ -46,7 +46,7 @@ Main solver for Cloudflare IUAM challenges.
 
 ```rust
 pub struct IuamSolver {
-    pub timeout_duration: Duration,    // Default: 120 seconds
+    pub timeout_duration: Duration,    // Default: 29 seconds
     pub poll_interval: Duration,       // Default: 500 milliseconds
 }
 ```
@@ -100,7 +100,7 @@ pub struct IuamResult {
 
 #### `new()`
 Creates a new solver with default settings.
-- Timeout: 120 seconds
+- Timeout: 29 seconds
 - Poll interval: 500ms
 
 ```rust
@@ -182,7 +182,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Solve IUAM
     let solver = IuamSolver::new()
-        .with_timeout(Duration::from_secs(120))
+        .with_timeout(Duration::from_secs(29))
         .with_poll_interval(Duration::from_millis(500));
 
     let result = solver.solve(
@@ -508,7 +508,7 @@ let results = join_all(handles).await;
 
 ```
 4 Chrome processes × 5 contexts = 20 concurrent challenges
-Timeout: 120 seconds
+Timeout: 29 seconds
 Poll interval: 500ms
 Memory limit: 4GB
 ```

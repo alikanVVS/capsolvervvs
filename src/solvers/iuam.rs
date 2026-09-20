@@ -1,6 +1,7 @@
 use super::error::{Result, SolverError};
-use super::utils::validate_url;
+use super::utils::{origin_of, validate_url};
 use crate::browser::{BrowserContext, CdpSession};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -28,7 +29,7 @@ pub struct IuamParams {
 impl IuamSolver {
     pub fn new() -> Self {
         IuamSolver {
-            timeout_duration: Duration::from_secs(120),
+            timeout_duration: Duration::from_secs(29),
             poll_interval: Duration::from_millis(500),
         }
     }
@@ -43,43 +44,13 @@ impl IuamSolver {
         self
     }
 
-    pub async fn solve(
-        &self,
-        context: &mut BrowserContext,
-        url: &str,
-        proxy: Option<&str>,
-    ) -> Result<IuamResult> {
+    pub async fn solve(&self, context: &mut BrowserContext, url: &str) -> Result<IuamResult> {
         validate_url(url)?;
-
-        let session = self.setup_page(context, url, proxy).await?;
-
-        self.wait_for_cf_clearance(&session, url).await
-    }
-
-    pub async fn solve_with_params(
-        &self,
-        context: &mut BrowserContext,
-        params: IuamParams,
-    ) -> Result<IuamResult> {
-        self.solve(context, &params.url, params.proxy.as_deref()).await
-    }
-
-    async fn setup_page(
-        &self,
-        context: &mut BrowserContext,
-        url: &str,
-        _proxy: Option<&str>,
-    ) -> Result<Arc<CdpSession>> {
-        if context.cdp_session.is_none() {
-            return Err(SolverError::CdpError(
-                "No CDP session in context".to_string(),
-            ));
-        }
 
         let session = context
             .cdp_session
             .as_ref()
-            .ok_or_else(|| SolverError::CdpError("CDP session lost".to_string()))?
+            .ok_or_else(|| SolverError::CdpError("No CDP session in context".to_string()))?
             .clone();
 
         session
@@ -88,11 +59,21 @@ impl IuamSolver {
             .map_err(|e| SolverError::NavigationFailed(e.to_string()))?;
 
         session
-            .wait_for_navigation(self.timeout_duration.as_secs())
+            .wait_for_navigation(self.timeout_duration)
             .await
             .map_err(|e| SolverError::NavigationFailed(e.to_string()))?;
 
-        Ok(session)
+        self.wait_for_cf_clearance(&session, url).await
+    }
+
+    /// The proxy is bound when the browser context is created, so it is applied by
+    /// `BrowserPool::new_page` before this runs.
+    pub async fn solve_with_params(
+        &self,
+        context: &mut BrowserContext,
+        params: IuamParams,
+    ) -> Result<IuamResult> {
+        self.solve(context, &params.url).await
     }
 
     async fn wait_for_cf_clearance(
@@ -100,15 +81,12 @@ impl IuamSolver {
         session: &Arc<CdpSession>,
         url: &str,
     ) -> Result<IuamResult> {
-        let mut elapsed = Duration::ZERO;
+        let origin = origin_of(url)?;
+        let deadline = tokio::time::Instant::now() + self.timeout_duration;
 
         loop {
-            if elapsed >= self.timeout_duration {
-                return Err(SolverError::Timeout);
-            }
-
             let cookies = session
-                .get_cookies()
+                .get_cookies_for(&[url, &origin])
                 .await
                 .map_err(|e| SolverError::CdpError(e.to_string()))?;
 
@@ -116,62 +94,48 @@ impl IuamSolver {
             let mut cf_clearance = None;
 
             for cookie in cookies {
-                if let Some(name) = cookie.get("name").and_then(|n| n.as_str()) {
-                    if let Some(value) = cookie.get("value").and_then(|v| v.as_str()) {
-                        cookie_map.insert(name.to_string(), value.to_string());
+                let (Some(name), Some(value)) = (
+                    cookie.get("name").and_then(Value::as_str),
+                    cookie.get("value").and_then(Value::as_str),
+                ) else {
+                    continue;
+                };
 
-                        if name == "cf_clearance" {
-                            cf_clearance = Some(value.to_string());
-                        }
-                    }
+                if name == "cf_clearance" && !value.is_empty() {
+                    cf_clearance = Some(value.to_string());
                 }
+                cookie_map.insert(name.to_string(), value.to_string());
             }
 
             if let Some(clearance) = cf_clearance {
-                let user_agent = self.get_user_agent(session).await?;
-                let ip = self.get_ip_address(session, url).await?;
-
                 return Ok(IuamResult {
                     cf_clearance: clearance,
-                    user_agent,
+                    user_agent: session
+                        .user_agent()
+                        .await
+                        .map_err(|e| SolverError::CdpError(e.to_string()))?,
                     cookies: cookie_map,
-                    ip,
+                    ip: self.get_ip_address(session).await,
                 });
             }
 
-            sleep(self.poll_interval).await;
-            elapsed += self.poll_interval;
-        }
-    }
-
-    async fn get_user_agent(&self, session: &Arc<CdpSession>) -> Result<String> {
-        let result = session
-            .evaluate_script("navigator.userAgent")
-            .await
-            .map_err(|e| SolverError::CdpError(e.to_string()))?;
-
-        if let Some(value) = result.get("result").and_then(|r| r.get("value")) {
-            if let Some(ua) = value.as_str() {
-                return Ok(ua.to_string());
+            if tokio::time::Instant::now() >= deadline {
+                return Err(SolverError::Timeout);
             }
-        }
 
-        Err(SolverError::TokenExtractionFailed(
-            "Could not extract User-Agent".to_string(),
-        ))
+            sleep(self.poll_interval).await;
+        }
     }
 
-    async fn get_ip_address(&self, session: &Arc<CdpSession>, _url: &str) -> Result<String> {
+    /// Runs inside the page so the address reflects the context's proxy, not the host's.
+    /// Never fails the solve: the clearance cookie is the actual deliverable.
+    async fn get_ip_address(&self, session: &Arc<CdpSession>) -> String {
+        // `mode: 'no-cors'` would make the response opaque and unreadable; ipify sends CORS headers.
         let script = r#"
-            (async function() {
+            (async () => {
                 try {
-                    const response = await fetch('https://api.ipify.org?format=json', {
-                        method: 'GET',
-                        mode: 'no-cors'
-                    });
-                    if (!response.ok) {
-                        return 'unknown';
-                    }
+                    const response = await fetch('https://api.ipify.org?format=json');
+                    if (!response.ok) return 'unknown';
                     const data = await response.json();
                     return data.ip || 'unknown';
                 } catch (e) {
@@ -180,20 +144,19 @@ impl IuamSolver {
             })()
         "#;
 
-        let result = session
-            .evaluate_script(script)
-            .await
-            .map_err(|e| SolverError::CdpError(format!("Failed to get IP: {}", e)))?;
-
-        if let Some(value) = result.get("result").and_then(|r| r.get("value")) {
-            if let Some(ip) = value.as_str() {
-                if ip != "unknown" && !ip.is_empty() {
-                    return Ok(ip.to_string());
-                }
+        match session.evaluate_script(script).await {
+            Ok(response) => response
+                .get("result")
+                .and_then(|r| r.get("value"))
+                .and_then(Value::as_str)
+                .filter(|ip| !ip.is_empty())
+                .unwrap_or("unknown")
+                .to_string(),
+            Err(e) => {
+                tracing::warn!(error = %e, "IP lookup failed");
+                "unknown".to_string()
             }
         }
-
-        Ok("unknown".to_string())
     }
 }
 
@@ -210,7 +173,7 @@ mod tests {
     #[test]
     fn test_iuam_solver_creation() {
         let solver = IuamSolver::new();
-        assert_eq!(solver.timeout_duration, Duration::from_secs(120));
+        assert_eq!(solver.timeout_duration, Duration::from_secs(29));
         assert_eq!(solver.poll_interval, Duration::from_millis(500));
     }
 
@@ -268,6 +231,6 @@ mod tests {
     #[test]
     fn test_iuam_solver_default() {
         let solver = IuamSolver::default();
-        assert_eq!(solver.timeout_duration, Duration::from_secs(120));
+        assert_eq!(solver.timeout_duration, Duration::from_secs(29));
     }
 }

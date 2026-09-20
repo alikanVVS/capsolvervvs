@@ -28,6 +28,11 @@ async-trait = "0.1"
 parking_lot = "0.12"
 chrono = { version = "0.4", features = ["serde"] }
 urlencoding = "2.1"
+base64 = "0.22"
+tower = { version = "0.5", features = ["timeout"] }
+tower-http = { version = "0.6", features = ["trace", "limit"] }
+# DevTools target discovery talks plain HTTP to 127.0.0.1, so no TLS backend is needed.
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
 
 [dev-dependencies]
 tokio-test = "0.4"

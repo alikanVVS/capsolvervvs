@@ -47,9 +47,11 @@ let config = Config {
     headless: true,
     disable_sandbox: false,
     user_agent: Some("Mozilla/5.0".to_string()),
-    solve_timeout: 120,
-    load_timeout: 30,
-    cdp_timeout: 10,
+    solve_timeout_ms: 29_000,
+    load_timeout_ms: 30_000,
+    cdp_timeout_ms: 10_000,
+    startup_timeout_ms: 20_000,
+    request_timeout_ms: 60_000,
     cdp_port_base: 9222,
 };
 
@@ -204,9 +206,11 @@ async fn main() -> anyhow::Result<()> {
         headless: true,
         disable_sandbox: false,
         user_agent: None,
-        solve_timeout: 120,
-        load_timeout: 30,
-        cdp_timeout: 10,
+        solve_timeout_ms: 29_000,
+        load_timeout_ms: 30_000,
+        cdp_timeout_ms: 10_000,
+        startup_timeout_ms: 20_000,
+        request_timeout_ms: 60_000,
         cdp_port_base: 9222,
     };
 
@@ -342,7 +346,7 @@ When running as a service, the HTTP API exposes:
 ### GET /health
 
 ```bash
-curl http://localhost:8080/health
+curl http://localhost:407/health
 ```
 
 Response:
@@ -357,12 +361,6 @@ Response:
     "processes": 4
   }
 }
-```
-
-### POST /shutdown
-
-```bash
-curl -X POST http://localhost:8080/shutdown
 ```
 
 ## Testing

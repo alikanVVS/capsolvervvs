@@ -1,80 +1,80 @@
-# Multi-stage Dockerfile for production Rust CAPTCHA Solver service
-# Stage 1: Builder
-FROM rust:1.75 as builder
+# syntax=docker/dockerfile:1
+
+# ---- Stage 1: build ----------------------------------------------------------
+# Must be new enough for the versions pinned in Cargo.lock.
+FROM rust:1.94-slim-bookworm AS builder
 
 WORKDIR /app
 
-# Install dependencies for building
-RUN apt-get update && apt-get install -y \
-    pkg-config \
-    libssl-dev \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy Cargo files
 COPY Cargo.toml Cargo.lock ./
-
-# Copy source code
 COPY src ./src
 
-# Build optimized binary
+# The binary is copied out inside this RUN because cache mounts do not persist
+# into the resulting layer.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    cargo build --release && \
-    mv target/release/capsolver /app/capsolver
+    --mount=type=cache,target=/app/target \
+    cargo build --release --locked --bin capsolver && \
+    cp target/release/capsolver /app/capsolver
 
-# Stage 2: Runtime
+# ---- Stage 2: runtime --------------------------------------------------------
 FROM debian:bookworm-slim
 
 WORKDIR /app
 
-# Install Chrome and necessary libraries
-RUN apt-get update && apt-get install -y \
-    wget \
-    gnupg \
-    ca-certificates \
-    fonts-dejavu \
-    fontconfig \
-    libssl3 \
-    libfontconfig1 \
-    libfreetype6 \
-    libnss3 \
-    xdg-utils \
-    x11-utils \
+# curl is required by HEALTHCHECK below; tini reaps the helper processes Chrome
+# forks, which would otherwise pile up as zombies under PID 1.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        tini \
+        wget \
+        gnupg \
+        fonts-liberation \
+        fontconfig \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Chrome stable
-RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - && \
-    echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list && \
+# apt-key is deprecated and removed in newer Debian, so the key goes to a keyring
+# that the source entry references directly.
+RUN wget -qO- https://dl-ssl.google.com/linux/linux_signing_key.pub \
+        | gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg && \
+    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" \
+        > /etc/apt/sources.list.d/google-chrome.list && \
     apt-get update && \
-    apt-get install -y google-chrome-stable && \
+    apt-get install -y --no-install-recommends google-chrome-stable && \
     rm -rf /var/lib/apt/lists/*
 
-# Copy binary from builder
-COPY --from=builder /app/capsolver /app/
+COPY --from=builder /app/capsolver /app/capsolver
 
-# Create non-root user for security
-RUN useradd -m -u 1000 capsolver && \
+# Chrome cannot run as root without --no-sandbox, and running unprivileged is
+# preferable regardless. HOME must be writable for Chrome's crash handler.
+RUN useradd --create-home --uid 1000 capsolver && \
     chown -R capsolver:capsolver /app
 
-# Set environment variables
-ENV CHROME_BIN=/usr/bin/google-chrome
-ENV PORT=407
-ENV SERVER_PORT=407
-ENV SERVER_HOST=0.0.0.0
-ENV BROWSER_POOL_SIZE=2
-ENV TABS_PER_PROCESS=10
-ENV SOLVE_TIMEOUT=29000
-ENV LOG_LEVEL=info
-ENV RUST_LOG=info
+ENV HOME=/home/capsolver \
+    CHROME_PATH=/usr/bin/google-chrome \
+    CHROME_BIN=/usr/bin/google-chrome \
+    PORT=407 \
+    SERVER_HOST=0.0.0.0 \
+    BROWSER_POOL_SIZE=2 \
+    TABS_PER_PROCESS=10 \
+    # Timeouts are milliseconds.
+    SOLVE_TIMEOUT=29000 \
+    LOAD_TIMEOUT=30000 \
+    CDP_TIMEOUT=10000 \
+    DISABLE_SANDBOX=true \
+    LOG_LEVEL=info \
+    RUST_LOG=info
 
-# Expose port
 EXPOSE 407
 
-# Switch to non-root user
 USER capsolver
 
-# Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD curl -f http://localhost:407/health || exit 1
+    CMD curl -fsS http://127.0.0.1:${PORT}/health || exit 1
 
-# Run the application
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["/app/capsolver"]

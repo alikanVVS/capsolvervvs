@@ -161,7 +161,7 @@ LOG_LEVEL=info
 
 #### `GET /health`
 ```bash
-curl http://localhost:8080/health
+curl http://localhost:407/health
 ```
 Returns:
 ```json
@@ -177,10 +177,7 @@ Returns:
 }
 ```
 
-#### `POST /shutdown`
-```bash
-curl -X POST http://localhost:8080/shutdown
-```
+Shutdown is handled via SIGTERM/Ctrl+C, not an HTTP endpoint.
 
 ### Performance
 
