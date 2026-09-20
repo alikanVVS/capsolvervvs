@@ -1,12 +1,5 @@
-mod api;
-mod browser;
-mod config;
-mod error;
-
-use config::Config;
-use browser::BrowserPool;
-use api::create_router;
-use std::sync::Arc;
+use capsolver::{Config, BrowserPool};
+use capsolver::api::create_router;
 use tracing_subscriber;
 
 #[tokio::main]
