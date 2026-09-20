@@ -1,0 +1,37 @@
+[package]
+name = "capsolver"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "capsolver"
+path = "src/lib.rs"
+
+[[bin]]
+name = "capsolver"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1.40", features = ["full"] }
+tokio-tungstenite = "0.23"
+tungstenite = "0.23"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+thiserror = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+axum = "0.7"
+uuid = { version = "1.0", features = ["v4", "serde"] }
+futures = "0.3"
+async-trait = "0.1"
+parking_lot = "0.12"
+chrono = { version = "0.4", features = ["serde"] }
+
+[dev-dependencies]
+tokio-test = "0.4"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
