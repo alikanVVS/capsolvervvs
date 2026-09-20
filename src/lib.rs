@@ -7,4 +7,4 @@ pub mod solvers;
 pub use browser::{BrowserContext, BrowserPool, CapacityStats, CdpSession, Page};
 pub use config::Config;
 pub use error::{PoolError, Result};
-pub use solvers::{SolverError, TurnstileSolver, TurnstileParams};
+pub use solvers::{SolverError, TurnstileSolver, TurnstileParams, IuamSolver, IuamResult, IuamParams};
